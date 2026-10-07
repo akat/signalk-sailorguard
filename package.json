@@ -32,5 +32,13 @@
     "bcryptjs": "^3.0.3",
     "signalk-server": "^2.33.0",
     "ws": "^8.22.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/akat/signalk-sailorguard.git"
+  },
+  "homepage": "https://github.com/akat/signalk-sailorguard#readme",
+  "bugs": {
+    "url": "https://github.com/akat/signalk-sailorguard/issues"
   }
 }

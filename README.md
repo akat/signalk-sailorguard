@@ -1,6 +1,6 @@
 # signalk-sailorguard
 
-A Signal K server plugin for the **SailorGuard / 6Pack** app. It watches the boat
+A Signal K server plugin for the **SailorGuard** app. It watches the boat
 **on the server**, around the clock, so the alarms work even when the phone is
 asleep or out of range:
 
