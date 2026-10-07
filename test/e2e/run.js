@@ -22,7 +22,15 @@ const bcrypt = require('bcryptjs')
 const ROOT = path.resolve(__dirname, '../..')
 const GATEWAY_DIR = process.env.SAILORGUARD_PUSH_DIR || path.resolve(ROOT, '../sailorguard-push')
 const { startFakeApns } = require(path.join(GATEWAY_DIR, 'test/helpers/fake-apns'))
-const SERVER_BIN = path.join(path.dirname(require.resolve('signalk-server/package.json')), 'bin/signalk-server')
+// SK_SERVER_DIR=/path/to/node_modules/signalk-server runs against another server version (e.g. 2.16).
+const SERVER_DIR = process.env.SK_SERVER_DIR || path.dirname(require.resolve('signalk-server/package.json'))
+const SERVER_BIN = path.join(SERVER_DIR, 'bin/signalk-server')
+const SERVER_VERSION = require(path.join(SERVER_DIR, 'package.json')).version
+const PUSH_INFO = '/signalk/v1/api/vessels/self/sailorguard/push'
+const PUT_REGISTER = '/signalk/v1/api/vessels/self/sailorguard/push/register'
+const PUT_UNREGISTER = '/signalk/v1/api/vessels/self/sailorguard/push/unregister'
+const put = (value, headers = {}) => ({ method: 'PUT', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify({ value }) })
+const putBody = (r) => { try { return JSON.parse(r.body.message) } catch { return {} } }
 const EXPO_PORT = 18090
 const GATEWAY_PORT = 18600
 const GATEWAY = `http://127.0.0.1:${GATEWAY_PORT}`
@@ -102,27 +110,28 @@ async function appFlow({ expoPushes, apns }) {
   const sk = (p, init) => request(SK + p, init)
   const server = await startSignalK(PORT, { security: false })
   try {
-    // 1. The plugin registers itself with the gateway on start.
+    // 1. The plugin registers itself with the gateway on start and publishes
+    //    sailorguard.push for the app (readable with any token).
     let info
-    for (let i = 0; i < 20; i++) {
-      info = await sk('/plugins/signalk-sailorguard/api/info')
-      if (info.body.push?.gateway?.state === 'ready') break
+    for (let i = 0; i < 40; i++) {
+      info = await sk(PUSH_INFO)
+      if (info.body?.value?.state === 'ready') break
       await sleep(250)
     }
-    const gwInstallation = info.body.push?.gateway?.installationId
-    check(info.body.push?.gateway?.state === 'ready' && /^sgi_/.test(gwInstallation), `plugin registered with gateway: ${JSON.stringify(info.body.push)}`)
+    const gwInstallation = info.body?.value?.installationId
+    check(info.body?.value?.state === 'ready' && /^sgi_/.test(gwInstallation), `plugin registered with gateway, discovery value: ${JSON.stringify(info.body?.value)}`)
 
     // 2. The app: push token -> gateway handle -> plugin (Android in Greek, iPhone in English).
     async function registerPhone(pushToken, locale, platform, appInstallationId) {
       const h = await request(`${GATEWAY}/v1/handles`, json({ installationId: gwInstallation, pushToken, locale, platform, appInstallationId }))
-      const r = await sk('/plugins/signalk-sailorguard/api/push/register', json({ handle: h.body.handle, installationId: appInstallationId, platform }))
-      return { handle: h.body.handle, gw: h.status, plugin: r }
+      const r = await sk(PUT_REGISTER, put({ handle: h.body.handle, installationId: appInstallationId, platform }))
+      return { handle: h.body.handle, gw: h.status, plugin: r, result: putBody(r) }
     }
     const android = await registerPhone('ExponentPushToken[android1]', 'el-GR', 'android', 'phone-android')
     const iphone = await registerPhone(`ExponentPushToken[apns:${'ab'.repeat(32)}]`, 'en-US', 'ios', 'phone-ios')
-    check(android.gw === 201 && android.plugin.status === 200 && iphone.plugin.body.totalDevices === 2, `phones registered: ${JSON.stringify(iphone.plugin.body)}`)
-    const raw = await sk('/plugins/signalk-sailorguard/api/push/register', json({ token: 'ExponentPushToken[android1]' }))
-    check(raw.status === 400 && /Raw push tokens are not accepted/.test(raw.body.error), `raw push token refused by the plugin (${raw.status})`)
+    check(android.gw === 201 && android.plugin.status === 200 && iphone.result.totalDevices === 2, `phones registered via Signal K PUT: ${JSON.stringify(iphone.plugin.body)}`)
+    const raw = await sk(PUT_REGISTER, put({ token: 'ExponentPushToken[android1]' }))
+    check(raw.status === 400 && /Raw push tokens are not accepted/.test(raw.body.message), `raw push token refused by the plugin (${raw.status})`)
 
     // 3. Alarm config from the app, then the boat drifts out of the circle.
     const ws = new WebSocket(`ws://127.0.0.1:${PORT}/signalk/v1/stream?subscribe=none`)
@@ -180,10 +189,10 @@ async function appFlow({ expoPushes, apns }) {
     check(steal.status === 200 && steal.body.sent === 0 && steal.body.results.every((r) => r.status === 'unknown'), `other installation cannot use these handles: ${JSON.stringify(steal.body)}`)
 
     // 7. Unregister a phone: the plugin also withdraws the handle from the gateway.
-    const un = await sk('/plugins/signalk-sailorguard/api/push/unregister', json({ installationId: 'phone-ios' }))
+    const un = await sk(PUT_UNREGISTER, put({ installationId: 'phone-ios' }))
     await sleep(300)
     const reuse = await request(`${GATEWAY}/v1/handles/revoke`, json({ handle: iphone.handle, pushToken: `ExponentPushToken[apns:${'ab'.repeat(32)}]` }))
-    check(un.body.removed === 1 && reuse.status === 404, `unregister removed the handle at the gateway too (${reuse.status})`)
+    check(putBody(un).removed === 1 && reuse.status === 404, `unregister removed the handle at the gateway too (${reuse.status})`)
     ws.close()
   } catch (e) {
     console.error(e)
@@ -209,15 +218,15 @@ async function securityFlow() {
     const rw = await deviceToken('dev-rw-1', 'readwrite')
     const ro = await deviceToken('dev-ro-1', 'readonly')
     check(rw && ro, 'got device tokens')
-    const reg = (tok) => sk('/plugins/signalk-sailorguard/api/push/register', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(tok ? { Authorization: `Bearer ${tok}` } : {}) },
-      body: JSON.stringify({ handle: 'sgh_SSSSSSSSSSSSSSSSSSSSSS' })
-    })
-    check((await reg()).status === 401, 'anonymous register denied')
-    check((await reg(ro)).status === 401, 'readonly register denied')
-    check((await reg(rw)).status === 200, 'readwrite register allowed')
-    check((await sk('/plugins/signalk-sailorguard/api/info', { headers: { Authorization: `Bearer ${ro}` } })).status === 200, 'readonly can read info')
+    const reg = (tok) => sk(PUT_REGISTER, put({ handle: 'sgh_SSSSSSSSSSSSSSSSSSSSSS' }, tok ? { Authorization: `Bearer ${tok}` } : {}))
+    const anon = await reg()
+    check(anon.status === 401 || anon.status === 403, `anonymous register denied (${anon.status})`)
+    const roReg = await reg(ro)
+    check(roReg.status === 401 || roReg.status === 403, `readonly register denied (${roReg.status})`)
+    const rwReg = await reg(rw)
+    check(rwReg.status === 200, `readwrite register allowed via PUT (${rwReg.status} ${JSON.stringify(rwReg.body)})`)
+    const roInfo = await sk(PUSH_INFO, { headers: { Authorization: `Bearer ${ro}` } })
+    check(roInfo.status === 200 && roInfo.body?.value?.apiVersion === 2, `readonly can read the discovery value (${roInfo.status})`)
     check((await sk('/plugins/signalk-sailorguard/api/push/devices', { headers: { Authorization: `Bearer ${rw}` } })).status === 401, 'readwrite cannot list devices')
     check((await sk('/plugins/signalk-sailorguard/api/push/devices', { headers: admin })).status === 200, 'admin lists devices')
   } catch (e) {
@@ -264,6 +273,7 @@ async function securityFlow() {
   })
   await waitFor(`${GATEWAY}/health`)
 
+  console.log(`# Signal K server ${SERVER_VERSION}`)
   console.log('# app flow (plugin + gateway)')
   await appFlow({ expoPushes, apns })
   console.log('# security')

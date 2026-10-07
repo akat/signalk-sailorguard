@@ -1,6 +1,6 @@
 {
   "name": "signalk-sailorguard",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "SailorGuard / 6Pack companion plugin: server-side anchor (geofence), depth and wind alarms with iOS/Android push notifications.",
   "main": "index.js",
   "keywords": [

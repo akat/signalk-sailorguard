@@ -95,7 +95,7 @@ All endpoints are under `/plugins/signalk-sailorguard`. Permissions apply only w
 
 | Method and path | Permission | Purpose |
 |---|---|---|
-| `GET /api/info` | readonly | Capability discovery, including `push.gateway.installationId` |
+| `GET /api/info` | readonly | Diagnostics, including the gateway state. The app uses the `sailorguard.push` value instead. |
 | `GET /api/status` | readonly | Config, per-alarm state, last samples |
 | `POST /api/push/register` | readwrite | Register a phone's gateway handle (see below) |
 | `POST /api/push/unregister` | readwrite | `{handle}` or `{installationId}` |
@@ -105,45 +105,56 @@ All endpoints are under `/plugins/signalk-sailorguard`. Permissions apply only w
 
 On Signal K servers older than 2.x (without `router.access`), every endpoint requires admin while security is on.
 
-### Registering a device
+### Registering a phone (Signal K API, works on every server version)
 
-The app needs a gateway handle first:
+Signal K servers before per-route plugin permissions (for example 2.16) require an
+**admin** token for every `/plugins/...` route. Because of that, the app does not use
+the plugin routes. It uses two standard Signal K mechanisms that need only `readonly`
+and `readwrite` on every version.
 
-1. Read `GET /plugins/signalk-sailorguard/api/info` and take `push.gateway.installationId` (`sgi_…`).
-2. Call `POST https://push.sailorguard.com/v1/handles` with
-   `{installationId, pushToken, platform, appInstallationId, appVersion, locale}`.
-   The response is `{handle: "sgh_…"}`.
-3. Send `POST /plugins/signalk-sailorguard/api/push/register` with this body:
+**1. Discovery.** Any authenticated token can read this:
 
-```json
-{
-  "handle": "sgh_…",
-  "installationId": "app-installation-uuid",
-  "platform": "ios",
-  "appVersion": "1.0.9",
-  "deviceName": "Angelos' iPhone",
-  "alarms": ["geofence", "position", "depth", "wind"]
-}
+```
+GET /signalk/v1/api/vessels/self/sailorguard/push
+→ { "value": { "apiVersion": 2, "enabled": true, "installationId": "sgi_…", "state": "ready" }, … }
+```
+
+| `state` | Meaning |
+|---|---|
+| `ready` | The plugin is registered with the gateway. |
+| `unregistered`, `unverified` | No gateway credential yet; the plugin is retrying. |
+| `revoked` | The gateway revoked this installation. |
+| `disabled` | Push is turned off in the plugin settings. |
+
+**2. Handle from the gateway.** The app calls
+`POST https://push.sailorguard.com/v1/handles` with
+`{installationId, pushToken, platform, appInstallationId, appVersion, locale}`
+and gets back `{handle: "sgh_…"}`.
+
+**3. Registration.** This is a Signal K PUT, so it needs a **readwrite** token:
+
+```
+PUT /signalk/v1/api/vessels/self/sailorguard/push/register
+{ "value": { "handle": "sgh_…", "installationId": "app-installation-uuid", "platform": "ios",
+             "appVersion": "1.0.9", "deviceName": "…", "alarms": ["geofence", "position", "depth", "wind"] } }
+→ { "state": "COMPLETED", "statusCode": 200, "message": "{\"ok\":true,\"added\":true,\"totalDevices\":2}" }
 ```
 
 - Only `handle` is required.
-- Raw push tokens are rejected with `400`.
+- Raw push tokens are rejected with `statusCode: 400`.
 - `installationId` identifies the phone: a new handle from the same phone replaces
   the old one, and the old one is also withdrawn from the gateway.
 - `alarms` limits which alarm types the phone receives. If it is omitted, the phone
   receives all of them.
 
-The response is:
+To unregister, send `PUT /signalk/v1/api/vessels/self/sailorguard/push/unregister` with
+`{"value": {"installationId": "…"}}` or `{"value": {"handle": "…"}}`.
 
-```json
-{ "ok": true, "added": true, "totalDevices": 2 }
-```
+The same operations also exist as `POST /plugins/signalk-sailorguard/api/push/register` and
+`/unregister`. On servers with per-route permissions they need readwrite; on older ones, admin.
 
 The app should register again on every connect. Phones that do not re-register
 within `pruneAfterDays` (default 60) are forgotten.
-
-`/api/info` also reports the gateway state (`ready`, `unregistered`, `unverified`
-or `revoked`). While the state is anything other than `ready`, the app cannot get a handle.
 
 ## 5. Differences from the ESP32 firmware
 
@@ -161,9 +172,9 @@ or `revoked`). While the state is anything other than `ready`, the app cannot ge
 
 `src/services/nodeRedService.ts` in the app:
 
-1. `GET /plugins/signalk-sailorguard/api/info`. If the response is 2xx and contains a gateway
-   `installationId`, get a handle from the gateway and register it with
-   `POST /plugins/signalk-sailorguard/api/push/register`.
-2. Otherwise (`401`, `403`, `404`, `405` or `501`): fall back to the legacy
-   `POST /plugins/signalk-node-red/redApi/register-expo-token`, sending `{token}` only.
-   This is the ESP32 firmware or Node-RED endpoint.
+1. `GET /signalk/v1/api/vessels/self/sailorguard/push`. If the response is 2xx, get a handle from the
+   gateway and register it with `PUT …/sailorguard/push/register`. A 401 or 403 on the PUT
+   means the token is readonly.
+2. Otherwise (`401`, `403`, `404`, `405`, `501` or `503`; the ESP32 answers `404 Path not found`):
+   fall back to the legacy `POST /plugins/signalk-node-red/redApi/register-expo-token`, sending
+   `{token}` only. This is the ESP32 firmware or Node-RED endpoint.

@@ -47,10 +47,11 @@ App ──push token──▶ Gateway ──handle──▶ App ──handle─�
 1. **First start.** The plugin registers with the gateway and gets its own
    installation credential. The credential is kept in the plugin data directory
    (`gateway-credentials.json`).
-2. **Phone registration.** The app reads the plugin's installation ID from
-   `GET /plugins/signalk-sailorguard/api/info` and trades its push token with the
-   gateway for a handle. That handle only works for this boat. The app then
-   registers the handle with the plugin.
+2. **Phone registration.** The app reads the plugin's installation ID from the
+   Signal K value `sailorguard.push` and trades its push token with the gateway for
+   a handle. That handle only works for this boat. The app then registers the handle
+   with a Signal K PUT on `sailorguard.push.register`. This works on every Signal K
+   version and needs a **readwrite** token.
 3. **Alarm.** When an alarm fires, the plugin sends the gateway the alarm type and
    numbers, for example `geofence, 72 m, radius 40 m`. The gateway writes the
    notification text (in English or Greek), adds the boat's name, and delivers it.
@@ -77,7 +78,7 @@ Turn off **Also publish standard navigation.anchor.\* paths** if
 ## Security
 
 If Signal K security is enabled:
-- The app's device token needs at least **readwrite** to register for push and to change the alarm configuration.
+- The app's device token needs **readwrite** to register for push and to change the alarm configuration. With a readonly token, Signal K silently ignores the app's changes.
 - Device lists and resets are admin-only.
 
 ## API

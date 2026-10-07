@@ -10,10 +10,14 @@ const { AlarmManager } = require('./lib/alarm-manager')
 const { DeviceStore, mask } = require('./lib/devices')
 const { createGatewayClient } = require('./lib/gateway')
 const { registerRoutes } = require('./lib/routes')
+const { createPushApi } = require('./lib/push-api')
 const { schema, withDefaults, WIND_PATHS } = require('./lib/options')
 
 const PLUGIN_ID = 'signalk-sailorguard'
 const CONFIG_PATH = 'navigation.anchor.akat'
+// Discovery value for the app, readable with any token on any server version:
+//   { apiVersion, installationId, state }  (installationId is not a secret)
+const PUSH_PATH = 'sailorguard.push'
 const TICK_MS = 5000
 const CURRENT_RADIUS_INTERVAL_MS = 2000
 const CURRENT_RADIUS_MIN_CHANGE_M = 5
@@ -262,10 +266,26 @@ module.exports = function (app) {
       if (monitors.wind.update(value, now, config)) manager.evaluate('wind')
     })
 
+    let lastPushInfo
+    function publishPushInfo() {
+      const gw = gateway.info()
+      const value = {
+        apiVersion: 2,
+        enabled: options.push.enabled,
+        installationId: options.push.enabled ? gw.installationId : null,
+        state: options.push.enabled ? gw.state : 'disabled'
+      }
+      const key = JSON.stringify(value)
+      if (key === lastPushInfo) return
+      lastPushInfo = key
+      publish([{ path: PUSH_PATH, value }])
+    }
+
     timers.push(setInterval(() => {
       monitors.position.tick(Date.now(), config)
       manager.evaluate('position')
       updateStatus()
+      publishPushInfo()
     }, TICK_MS))
 
     const prune = () => {
@@ -297,9 +317,28 @@ module.exports = function (app) {
       }
     }
 
+    // Phone registration through Signal K PUT, which requires exactly a
+    // readwrite token on every server version (unlike /plugins routes, which
+    // need admin before Signal K added per-route permissions).
+    const pushApi = createPushApi(runtime)
+    const putResult = ({ statusCode, body }) => ({
+      state: 'COMPLETED',
+      statusCode,
+      ...(statusCode >= 400 ? { message: body.error } : { message: JSON.stringify(body) })
+    })
+    app.registerPutHandler('vessels.self', `${PUSH_PATH}.register`, (ctx, p, value) => putResult(pushApi.register(value || {})), PLUGIN_ID)
+    app.registerPutHandler('vessels.self', `${PUSH_PATH}.unregister`, (ctx, p, value) => putResult(pushApi.unregister(value || {})), PLUGIN_ID)
+
     publishConfig()
+    publishPushInfo()
     updateStatus()
-    if (options.push.enabled) gateway.ensureReady().then(() => runtime && updateStatus())
+    if (options.push.enabled) {
+      gateway.ensureReady().then(() => {
+        if (!runtime) return
+        updateStatus()
+        publishPushInfo()
+      })
+    }
   }
 
   plugin.stop = function () {
