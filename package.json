@@ -1,0 +1,36 @@
+{
+  "name": "signalk-sailorguard",
+  "version": "0.1.0",
+  "description": "SailorGuard / 6Pack companion plugin: server-side anchor (geofence), depth and wind alarms with iOS/Android push notifications.",
+  "main": "index.js",
+  "keywords": [
+    "signalk-node-server-plugin",
+    "signalk-category-notifications",
+    "signalk",
+    "anchor",
+    "anchor-alarm",
+    "geofence",
+    "push-notifications"
+  ],
+  "signalk-plugin-enabled-by-default": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "index.js",
+    "lib/",
+    "README.md",
+    "docs/"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "test:e2e": "node test/e2e/run.js"
+  },
+  "author": "Angelos Katsaris",
+  "license": "Apache-2.0",
+  "devDependencies": {
+    "bcryptjs": "^3.0.3",
+    "signalk-server": "^2.33.0",
+    "ws": "^8.22.0"
+  }
+}
